@@ -1,0 +1,307 @@
+from nutils import function, export, mesh, solver, testing, cli
+from nutils.expression_v2 import Namespace
+import treelog
+import numpy as np
+
+
+def get_cylinder(inner_radius, outer_radius, height, nrefine=None):
+    """Creates a periodic hollow cylinder of with defined inner and outer
+    radius along the z axis with given height.
+
+    Parameters
+    ----------
+    inner_radius : float
+        Inner radius
+    outer_radius : float
+        Outer radius
+    height : float
+        Length along z-axis
+
+    Returns
+    -------
+    nutils.topology, nutils._Wrapper, nutils.function
+        Domain, geometry and nurbs basis of nutils functions
+    """
+
+    domain, geom0 = mesh.rectilinear([4, 1, 1], periodic=[0])
+
+    # Knot vector and knot multiplicities
+    kv = [[0, 1, 2, 3, 4], [0, 1], [0, 1]]
+    km = [[2, 2, 2, 2, 2], [2, 2], [2, 2]]
+
+    bsplinebasis = domain.basis('spline',
+                                degree=(2, 1, 1),
+                                knotmultiplicities=km,
+                                knotvalues=kv,
+                                periodic=[0])
+
+    cps = np.array([[inner_radius, 0, 0], [outer_radius, 0, 0],
+                    [inner_radius, 0, height], [outer_radius, 0, height],
+                    [inner_radius, -inner_radius, 0],
+                    [outer_radius, -outer_radius, 0],
+                    [inner_radius, -inner_radius, height],
+                    [outer_radius, -outer_radius,
+                     height], [0, -inner_radius, 0], [0, -outer_radius, 0],
+                    [0, -inner_radius, height], [0, -outer_radius, height],
+                    [-inner_radius, -inner_radius, 0],
+                    [-outer_radius, -outer_radius, 0],
+                    [-inner_radius, -inner_radius, height],
+                    [-outer_radius, -outer_radius, height],
+                    [-inner_radius, 0, 0], [-outer_radius, 0, 0],
+                    [-inner_radius, 0, height], [-outer_radius, 0, height],
+                    [-inner_radius, inner_radius, 0],
+                    [-outer_radius, outer_radius, 0],
+                    [-inner_radius, inner_radius, height],
+                    [-outer_radius, outer_radius, height],
+                    [0, inner_radius, 0], [0, outer_radius, 0],
+                    [0, inner_radius, height], [0, outer_radius, height],
+                    [inner_radius, inner_radius, 0],
+                    [outer_radius, outer_radius, 0],
+                    [inner_radius, inner_radius, height],
+                    [outer_radius, outer_radius, height]])
+
+    controlweights = np.tile(np.repeat([1., 1 / np.sqrt(2)], 4), 4)
+
+    # Create nurbsbasis and geometry
+    weightfunc = bsplinebasis.dot(controlweights)
+    nurbsbasis = bsplinebasis * controlweights / weightfunc
+    geom = (nurbsbasis[:, np.newaxis] * cps).sum(0)
+
+    # Refine domain nrefine times
+    if nrefine:
+        domain = domain.refine(nrefine)
+        bsplinebasis = domain.basis('spline', degree=2)
+        controlweights = domain.project(weightfunc,
+                                        onto=bsplinebasis,
+                                        geometry=geom0,
+                                        ischeme='gauss9')
+        nurbsbasis = bsplinebasis * controlweights / weightfunc
+
+    return domain, geom, nurbsbasis
+
+
+def main(nrefine=1,
+         poisson=0.3,
+         diffusivity=0.01,
+         thermal_expansion=0.01,
+         timestep=0.1,
+         endtime=0.2):
+    """[summary]
+
+    Parameters
+    ----------
+    nrefine : int, optional
+        Number of refinements of the domain, by default 1
+    poisson : float, optional
+        poisson ration of the material, by default 0.3
+    diffusivity : float, optional
+        diffusivity of the material, by default 0.01
+    thermal_expansion : float, optional
+        thermal expansion of the material, by default 0.01
+    timestep : float, optional
+        timestep in the solution of the heat problem, by default 0.1
+    endtime : float, optional
+        endtime of the heat problem, by default 0.2
+    """
+
+    ns = Namespace()
+
+    # Create a hollow cylinder as geometry
+    domain, geom, nurbsbasis = get_cylinder(inner_radius=1.,
+                                            outer_radius=1.5,
+                                            height=2.0,
+                                            nrefine=nrefine)
+    ns.x = geom
+    ns.define_for('x', gradient='∇', normal='n', jacobians=('dV', 'dS', 'dL'))
+    integration_degree = 4
+
+    # Heat equation
+    ns.tbasis = nurbsbasis
+    ns.temperature = function.dotarg('t', ns.tbasis)
+    ns.k = diffusivity
+    ns.boundaryT = 5.0
+
+    # Weak form of the heat equation
+    tres = domain.integral('k ∇_i(tbasis_n) ∇_i(temperature) dV' @ ns,
+                           degree=integration_degree)
+    tinertia = domain.integral('tbasis_n temperature dV' @ ns,
+                               degree=integration_degree)
+
+    # Enforce temperature on the boundary, which increases with height
+    sqr = domain.boundary.integral('(temperature - boundaryT x_2)^2 dS' @ ns,
+                                   degree=integration_degree)
+    tcons = solver.optimize('t', sqr, droptol=1e-12)
+
+    boundary_constrains = domain.boundary.project(fun='boundaryT x_2' @ ns,
+                                                  onto=ns.tbasis,
+                                                  geometry=geom,
+                                                  ischeme='gauss9')
+    lhs0 = domain.project(fun=0.,
+                          onto=ns.tbasis,
+                          geometry=geom,
+                          constrain=boundary_constrains,
+                          ischeme='gauss9')
+    solution = []
+
+    # Solve the heat problem
+    with treelog.iter.plain(
+            'timestep',
+            solver.impliciteuler('t',
+                                 tres,
+                                 tinertia,
+                                 lhs0=lhs0,
+                                 timestep=timestep,
+                                 constrain=tcons)) as steps:
+        for itime, t_solution in enumerate(steps):
+
+            solution.append({
+                'timestep': itime * timestep,
+                'solution': t_solution
+            })
+            print('Minimal solution', np.min(t_solution), np.max(t_solution))
+
+            if itime * timestep >= endtime:
+                break
+
+    # Elasticity problem
+    ns.ubasis = nurbsbasis.vector(domain.ndims)
+    ns.u = function.dotarg('u', ns.ubasis)
+
+    ns.lmbda = 2 * poisson
+    ns.mu = 1 - poisson
+    ns.alpha = thermal_expansion
+    # Final temperature
+    ns.finalT = 0.0
+
+    ns.δ = function.eye(domain.ndims)
+    ns.X_i = 'x_i + u_i'
+    ns.e_ij = '((∇_j(u_i) + ∇_i(u_j)) / 2) - alpha (temperature - finalT) δ_ij'
+    ns.c_ijkl = 'lmbda δ_ij δ_kl + mu (δ_ik δ_jl + δ_il δ_jk)'
+    ns.stress_ij = 'c_ijkl e_kl'
+
+    # Constrain the inner radius on the bottom to restrict rigid body movement
+    sqr = domain.boundary['bottom'].boundary['front'].integral(
+        'u_i u_i dL' @ ns, degree=integration_degree)
+    ucons = solver.optimize('u', sqr, droptol=1e-12)
+
+    # Solve the momentum balance linearly
+    ures = domain.integral('∇_j(ubasis_ni) stress_ij dV' @ ns,
+                           degree=integration_degree)
+
+    u_solution = solver.solve_linear('u',
+                                     ures,
+                                     constrain=ucons,
+                                     arguments={'t': t_solution})
+
+    # Sample the solution an export VTK
+    bezier = domain.sample('bezier', 5)
+    x, X, initialT, stress, normU = bezier.eval(
+        [ns.x, ns.X, ns.temperature, ns.stress,
+         function.norm2(ns.u)],
+        u=u_solution,
+        t=t_solution)
+
+    export.vtk('deformed_cylinder',
+               bezier.tri,
+               X,
+               initialT=initialT,
+               stress_xy=stress[:, 0, 1],
+               stress_xz=stress[:, 0, 2],
+               stress_yz=stress[:, 1, 2],
+               displacement=normU)
+
+    return t_solution, u_solution
+
+
+class test(testing.TestCase):
+    def test_default(self):
+        lhs_t, lhs_u = main(nrefine=1,
+                            poisson=.3,
+                            diffusivity=0.01,
+                            thermal_expansion=0.1,
+                            timestep=0.1,
+                            endtime=0.1)
+
+        with self.subTest('temperature'):
+            self.assertAlmostEqual64(
+                lhs_t, '''
+eNpjYPj/n4nh739Jy5eGL4wkLe2sV5nkmdpZn4NCJgYGhn//WRlwyQOlGRiBZuCSZwbKgVTgkv8Hlv2H
+136QC3HJQ0z/T0A/M079AJo7YXc=
+    ''')
+        with self.subTest('displacement'):
+            self.assertAlmostEqual64(
+                lhs_u, '''
+eNpF0a9OM0EcheFNEDhE76CmgaTdme3+ZtahUE1GgEJyAU1oqiqRBEEQXAAJpqqISVBFgNqdP9sZcBgc
+DhKaIErS5ONsPtJzAY94T5JgIbKXj3gWTuKDV2E/fjnNYy/LqJ/wn/QuGzJev/bnnPs3IeiCSI7pPf8U
+q7zeO5KKdv291HQrd4o1ncqrYiIehSum4puS/37swr9J4T+l8Nlz4wf41wH+wQK+tfAvLfxtB19b+MrC
+37Lwzw38Y/PnsxeefsSTeMYe/H7U7MvFnlpkWcKd/0mH7LDm9Zx3PPeC2uaCxuSq93yVt0y9p2hW7XpN
+g+pWrmlZnsqJGJWPYiqo/PNjF/5NCv8phc+eGz/Avw7wDxbwrYV/aeFvO/jawlcW/paFf27gH5uNz9Om
+D0MfzdBHLdDHefQ5rNGn49GnbdDHVejTMugzq9BnUKHPskSfUYk+VG768LT5l+FfzfCvWuDfX5/Dx78d
+j3/bBv+6Cv+2DP6dVfh3UOHfZYl/RyX+pXLzb+yG2PQJ6KMC+miOPtRHn7sMfV776PMm0Ick+nwK9DmS
+6HMv0WenQJ+rAn1csfkX/u
++/Af/Cj73G5/CHDP6cwxcEf0zwVzl8RfA1wV8T/ImAPxXw/wHBYmrs
+    ''')
+
+    def test_refined(self):
+        lhs_t, lhs_u = main(nrefine=2,
+                            poisson=.3,
+                            diffusivity=0.01,
+                            thermal_expansion=0.1,
+                            timestep=0.1,
+                            endtime=0.1)
+
+        with self.subTest('temperature'):
+            self.assertAlmostEqual64(
+                lhs_t, '''
+    eNr7/58BChgZDph/M265cPS8kckB82eWJmYzLtw6l2v2zPKplax5/dltZyLNn1r1Wv8w/294U1fXotf6
+AhJkZPgPNen/f0rM+fefkQFmziHzH8aNFw6dNzE5ZP7C0sxs+oWb5/LNXlg+t5I3rzm7+Uy0+XOrfuvf
+5ixGH3T1LfqtLyFBJrh7GBkoMYcBDijzFwMSoCycEYASf8HC+f9/ysKHkUrhg0g9lKVDBiqFD7XMoZa/
+GOG5lHrpcDCEDwDVFPye
+    ''')
+        with self.subTest('displacement'):
+            self.assertAlmostEqual64(
+                lhs_u, '''
+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
+Yts=
+    ''')
+
+
+if __name__ == '__main__':
+    cli.run(main)
