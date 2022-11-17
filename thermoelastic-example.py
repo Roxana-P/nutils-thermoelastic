@@ -5,6 +5,63 @@ import numpy as np
 from matplotlib.pyplot import Normalize
 from matplotlib.cm import coolwarm, ScalarMappable
 
+def evaluate_vertices_coordinates(domain, x, geom, degree=1, btype='std'):
+    """Evaluate the coordinates of the vertices and return them. 
+
+    Parameters
+    ----------
+    degree : int, optional
+        Interpolation degree, by default 1
+    btype : str, optional
+        Basistype, by default 'std'
+
+    Returns
+    -------
+    numpy.ndarray
+        Coordinates of the vertices 
+    """
+
+    newbasis = domain.basis(
+        btype, degree=degree).vector(domain.ndims)
+
+    vals = domain.project(
+        fun=x, onto=newbasis, geometry=geom, ischeme='bezier',
+        degree=2)
+    v = np.array(vals).reshape(-1, domain.ndims)
+
+    return v
+
+def set_initial_temperature(T0, pointwise=False, x=None, degree=1,
+                            btype='std', basis=None):
+    """Set the initial material temperature. 
+    :math: \mathbb{R}^d \to \mathbb{R} T(x)
+
+    Parameters
+    ----------
+    T : function
+        T(x), depending on the location
+    """
+    from scipy.interpolate import LinearNDInterpolator
+
+    if pointwise:
+        assert T0.shape[0] == x.shape[0]
+
+        # Set linear basis functions
+        
+        self.ns.tbasis = self.domain.basis(btype, degree=degree)
+    
+        self.T0 = function.dotarg('t', self.ns.tbasis)
+
+        # Interpolate values on linear basis
+        vertices = self.evaluate_vertices_coordinates(degree=degree)
+        field_values = self.interpolate_linear(vertices, x, T0)
+        self.ns.tbasis.shape[0] == field_values.shape[0]
+        # Save in solutions
+        assert not np.any(np.isnan(field_values))
+        self.solutions['t'] = field_values
+
+    else:
+        self.T0 = T0
 
 def get_cylinder(inner_radius, outer_radius, height, nrefine=None):
     """Creates a periodic hollow cylinder of with defined inner and outer
@@ -81,6 +138,52 @@ def get_cylinder(inner_radius, outer_radius, height, nrefine=None):
 
     return domain, geom, nurbsbasis
 
+def set_initial_values(domain, geom, givenbasis, points, values):
+    """Fit a basis to interpolate given scalar initial values
+
+    Parameters
+    ----------
+    domain : nutils.topology
+    geom : nutils.Wrapper
+        Nutils geometry
+    givenbasis : nutils.function
+        Basis function associated to the given intitial value
+    points : numpy.ndarray
+        Position of the initial values in space, shape (n_points x nsd)
+    values : numpy.ndarray
+        Intial values at x shape (n_points)
+    
+    Returns
+    -------
+    numpy.ndarray
+        Values at the vertices of the basis
+    """
+    from scipy.interpolate import LinearNDInterpolator, griddata
+
+    # Create a basis similar to the prescribed one with dimension 3
+    newbasis = givenbasis.vector(domain.ndims)
+
+    # Project the geometry on the prescibed basis in order to find its 
+    # unique vertices
+    vals = domain.project(
+        fun=geom, onto=newbasis, geometry=geom, ischeme='bezier',
+        degree=2)
+    vertices = np.array(vals).reshape(-1, domain.ndims)    
+
+    # Interpolate linearly the values at the vertices
+    eval_values = griddata(points, values, vertices, method='linear')
+    
+    # Points outside the convex hull are initiated with nan and
+    # replaced by the value of the nearest neighbour
+    if np.any(np.isnan(eval_values)):
+        nan_mask = np.isnan(eval_values)
+        eval_values[nan_mask] = griddata(
+            points, values, vertices[nan_mask], method='nearest')
+
+    field_values = eval_values
+
+    return field_values
+
 
 def main(nrefine=1,
          poisson=0.3,
@@ -119,52 +222,15 @@ def main(nrefine=1,
     ns.define_for('x', gradient='∇', normal='n', jacobians=('dV', 'dS', 'dL'))
     integration_degree = 4
 
-    # Heat equation
+    # Basis for temperature
     ns.tbasis = nurbsbasis
     ns.temperature = function.dotarg('t', ns.tbasis)
-    ns.k = diffusivity
-    ns.boundaryT = 5.0
 
-    # Weak form of the heat equation
-    tres = domain.integral('k ∇_i(tbasis_n) ∇_i(temperature) dV' @ ns,
-                           degree=integration_degree)
-    tinertia = domain.integral('tbasis_n temperature dV' @ ns,
-                               degree=integration_degree)
-
-    # Enforce temperature on the boundary, which increases with height
-    sqr = domain.boundary.integral('(temperature - boundaryT x_2)^2 dS' @ ns,
-                                   degree=integration_degree)
-    tcons = solver.optimize('t', sqr, droptol=1e-12)
-
-    boundary_constrains = domain.boundary.project(fun='boundaryT x_2' @ ns,
-                                                  onto=ns.tbasis,
-                                                  geometry=geom,
-                                                  ischeme='gauss9')
-    lhs0 = domain.project(fun=0.,
-                          onto=ns.tbasis,
-                          geometry=geom,
-                          constrain=boundary_constrains,
-                          ischeme='gauss9')
-    solution = []
-
-    # Solve the heat problem
-    with treelog.iter.plain(
-            'timestep',
-            solver.impliciteuler('t',
-                                 tres,
-                                 tinertia,
-                                 lhs0=lhs0,
-                                 timestep=timestep,
-                                 constrain=tcons)) as steps:
-        for itime, t_solution in enumerate(steps):
-
-            solution.append({
-                'timestep': itime * timestep,
-                'solution': t_solution
-            })
-
-            if itime * timestep >= endtime:
-                break
+    # Randomly create temperature initial values
+    x = domain.sample('bezier', 2).eval(ns.x)
+    init_vals = np.random.random(x.shape[0]) * 50
+    # Solve for weights that correspond to the initial temperature
+    t_solution = set_initial_values(domain, geom, ns.tbasis, x, init_vals)    
 
     # Elasticity problem
     ns.ubasis = nurbsbasis.vector(domain.ndims)
@@ -324,4 +390,5 @@ class test(testing.TestCase):
 
 
 if __name__ == '__main__':
-    cli.run(main)
+    main()
+    # cli.run(main)
