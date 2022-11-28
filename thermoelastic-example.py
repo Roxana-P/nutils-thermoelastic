@@ -256,6 +256,9 @@ def main(nrefine=1,
     # Solve the momentum balance linearly
     ures = domain.integral('∇_j(ubasis_ni) stress_ij dV' @ ns,
                            degree=integration_degree)
+    
+    geometric_derivation = domain.boundary.integral('u_k u_k dS' @ ns, 
+                           degree=integration_degree)
 
     u_solution = solver.solve_linear('u',
                                      ures,
@@ -269,6 +272,7 @@ def main(nrefine=1,
          function.norm2(ns.u)],
         u=u_solution,
         t=t_solution)
+    geom_diff = geometric_derivation.eval(u=u_solution, t=t_solution)
     export.vtk('deformed_cylinder', bezier.tri, X, initialT=initialT, u=normU)
 
     # Export matplotlib
@@ -286,13 +290,13 @@ def main(nrefine=1,
         ax.set_ylabel('y')
         ax.set_zlabel('z')
 
-    return t_solution, u_solution
+    return t_solution, u_solution, geom_diff
 
 
 @testing.requires('matplotlib')
 class test(testing.TestCase):
     def test_default(self):
-        lhs_t, lhs_u = main(nrefine=1,
+        lhs_t, lhs_u, g_diff= main(nrefine=1,
                             poisson=.3,
                             diffusivity=0.01,
                             thermal_expansion=0.1,
@@ -321,7 +325,7 @@ class test(testing.TestCase):
     ''')
 
     def test_refined(self):
-        lhs_t, lhs_u = main(nrefine=2,
+        lhs_t, lhs_u, g_diff = main(nrefine=2,
                             poisson=.3,
                             diffusivity=0.01,
                             thermal_expansion=0.1,
@@ -390,5 +394,6 @@ class test(testing.TestCase):
 
 
 if __name__ == '__main__':
-    main()
+    lhs_u, lhs_t, geom_diff = main()
+    print('Geometric derivation {}'.format(geom_diff))
     # cli.run(main)
