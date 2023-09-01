@@ -2,8 +2,6 @@ from nutils import function, export, mesh, solver, testing, cli
 from nutils.expression_v2 import Namespace
 import treelog
 import numpy as np
-from matplotlib.pyplot import Normalize
-from matplotlib.cm import coolwarm, ScalarMappable
 
 
 def get_cylinder(inner_radius, outer_radius, height, nrefine=None):
@@ -170,8 +168,8 @@ def main(nrefine=1,
     ns.ubasis = nurbsbasis.vector(domain.ndims)
     ns.u = function.dotarg('u', ns.ubasis)
 
-    ns.lmbda = 2 * poisson
-    ns.mu = 1 - poisson
+    ns.lmbda = 1
+    ns.mu = .5/poisson - 1
     ns.alpha = thermal_expansion
     # Final temperature
     ns.finalT = 0.0
@@ -200,25 +198,11 @@ def main(nrefine=1,
     bezier = domain.boundary.sample('bezier', 5)
     x, X, initialT, stress, normU = bezier.eval(
         [ns.x, ns.X, ns.temperature, ns.stress,
-         function.norm2(ns.u)],
+         np.linalg.norm(ns.u)],
         u=u_solution,
         t=t_solution)
     export.vtk('deformed_cylinder', bezier.tri, X, initialT=initialT, u=normU)
-
-    # Export matplotlib
-    with export.mplfigure('displacement.png') as fig:
-        ax = fig.add_subplot(111, projection='3d')
-
-        meanU = np.array([np.mean(normU[t]) for t in bezier.tri])
-        norm = Normalize(np.min(meanU), np.max(meanU))
-        surf = ax.plot_trisurf(X[:, 0], X[:, 1], X[:, 2], triangles=bezier.tri)
-        surf.set_fc(coolwarm(norm(meanU)))
-
-        cbar = fig.colorbar(ScalarMappable(cmap=coolwarm, norm=norm))
-        cbar.set_label('Displacement')
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
+    export.triplot('displacement.png', X, normU, tri=bezier.tri, cmap='coolwarm', vlabel='Displacement')
 
     return t_solution, u_solution
 
