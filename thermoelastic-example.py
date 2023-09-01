@@ -200,7 +200,7 @@ def main(nrefine=1,
     bezier = domain.boundary.sample('bezier', 5)
     x, X, initialT, stress, normU = bezier.eval(
         [ns.x, ns.X, ns.temperature, ns.stress,
-         function.norm2(ns.u)],
+         np.linalg.norm(ns.u)],
         u=u_solution,
         t=t_solution)
     export.vtk('deformed_cylinder', bezier.tri, X, initialT=initialT, u=normU)
