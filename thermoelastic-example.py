@@ -170,8 +170,8 @@ def main(nrefine=1,
     ns.ubasis = nurbsbasis.vector(domain.ndims)
     ns.u = function.dotarg('u', ns.ubasis)
 
-    ns.lmbda = 2 * poisson
-    ns.mu = 1 - poisson
+    ns.lmbda = 1
+    ns.mu = .5/poisson - 1
     ns.alpha = thermal_expansion
     # Final temperature
     ns.finalT = 0.0
