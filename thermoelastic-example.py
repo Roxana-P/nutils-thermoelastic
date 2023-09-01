@@ -2,8 +2,6 @@ from nutils import function, export, mesh, solver, testing, cli
 from nutils.expression_v2 import Namespace
 import treelog
 import numpy as np
-from matplotlib.pyplot import Normalize
-from matplotlib.cm import coolwarm, ScalarMappable
 
 
 def get_cylinder(inner_radius, outer_radius, height, nrefine=None):
@@ -204,21 +202,7 @@ def main(nrefine=1,
         u=u_solution,
         t=t_solution)
     export.vtk('deformed_cylinder', bezier.tri, X, initialT=initialT, u=normU)
-
-    # Export matplotlib
-    with export.mplfigure('displacement.png') as fig:
-        ax = fig.add_subplot(111, projection='3d')
-
-        meanU = np.array([np.mean(normU[t]) for t in bezier.tri])
-        norm = Normalize(np.min(meanU), np.max(meanU))
-        surf = ax.plot_trisurf(X[:, 0], X[:, 1], X[:, 2], triangles=bezier.tri)
-        surf.set_fc(coolwarm(norm(meanU)))
-
-        cbar = fig.colorbar(ScalarMappable(cmap=coolwarm, norm=norm))
-        cbar.set_label('Displacement')
-        ax.set_xlabel('x')
-        ax.set_ylabel('y')
-        ax.set_zlabel('z')
+    export.triplot('displacement.png', X, normU, tri=bezier.tri, cmap='coolwarm', vlabel='Displacement')
 
     return t_solution, u_solution
 
